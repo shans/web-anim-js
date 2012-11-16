@@ -1,18 +1,33 @@
 var webAnimVisUpdateAnims = undefined;
 
 var Timing = Class.create({
-	initialize: function(startDelay, iterationDuration, iterationCount, iterationStart, speed, direction, timingFunction, fill) {
-		this.startDelay = startDelay || 0;
-		this.iterationDuration = iterationDuration;
-		this.iterationCount = iterationCount || 1;
-		this.iterationStart = iterationStart || 0;
-		this.speed = speed || 1;
-		this.direction = direction || "normal";
-		this.timingFunction = timingFunction;
-		this.fill = fill || "none";
+	initialize: function(timingDict) {
+		this.startDelay = timingDict.startDelay || 0;
+		this.duration = timingDict.duration;
+		this.iterationCount = timingDict.iterationCount || 1.0;
+		this.iterationStart = timingDict.iterationStart || 0.0;
+		this.playbackRate = timingDict.playbackRate || 1;
+		this.direction = timingDict.direction || "normal";
+		if (typeof timingDict.timingFunc === "string") {
+			// TODO: Write createFromString
+			throw "createFromString not implemented";
+			this.timingFunc = TimingFunc.createFromString(timingDict.timingFunc);
+		} else {
+			this.timingFunc = timingDict.timingFunc;
+		}
+		this.fill = timingDict.fill || "forwards";
 	},
 	clone: function() {
-		return new Timing(this.startDelay, this.iterationDuration, this.iterationCount, this.iterationStart, this.speed, this.direction, this.timingFunction, this.fill);
+		return new Timing(
+			{ startDelay: this.startDelay,
+				duration: this.duration,
+				iterationCount: this.iterationCount,
+				iterationStart: this.iterationStart,
+				playbackRate: this.playbackRate,
+				direction: this.direction,
+				timingFunc: this.timingFunc ? this.timingFunc.clone() : null,
+				fill: this.fill
+			});
 	}
 })
 
@@ -23,14 +38,23 @@ function ImmutableTimingProxy(timing) {
 var TimingProxy = Class.create({
 	initialize: function(timing, setter) {
 		this.timing = timing;
-		["startDelay", "iterationDuration", "iterationCount", "iterationStart", "speed", "direction", "timingFunction", "fill"].forEach(function(s) {
+		["startDelay", "duration", "iterationCount", "iterationStart", "playbackRate", "direction", "timingFunc", "fill"].forEach(function(s) {
 			this.__defineGetter__(s, function() { return timing[s]; });
 			this.__defineSetter__(s, function(v) { var old = timing[s]; timing[s] = v; try { setter(v); } catch (e) { timing[s] = old; throw e;}});			
 		}.bind(this));
 	},
 	extractMutableTiming: function() {
-		return new Timing(this.timing.startDelay, this.timing.iterationDuration, this.timing.iterationCount, this.timing.iterationStart, this.timing.speed,
-						  this.timing.direction, this.timing.timingFunction, this.timing.fill);
+		return new Timing(
+			{ startDelay: this.timing.startDelay,
+				duration: this.timing.duration,
+				iterationCount: this.timing.iterationCount,
+				iterationStart: this.timing.iterationStart,
+				playbackRate: this.timing.playbackRate,
+				direction: this.timing.direction,
+				timingFunc: this.timing.timingFunc ?
+				            this.timing.timingFunc.clone() : null,
+				fill: this.timing.fill
+			});
 	},
 	clone: function() {
 		return this.timing.clone();
@@ -39,7 +63,7 @@ var TimingProxy = Class.create({
 
 var TimedTemplate = Class.create({
 	initialize: function(timing) {
-		this.timing = new TimingProxy(timing || new Timing(), function() { this.updateTiming()}.bind(this));
+		this.timing = new TimingProxy(timing || new Timing({}), function() { this.updateTiming()}.bind(this));
 		this.linkedAnims = [];
 	},
 	addLinkedAnim: function(anim) {
@@ -55,9 +79,8 @@ var TimedTemplate = Class.create({
 		this.linkedAnims.forEach(function(a) { a.updateIterationDuration(); });
 	},
 	_animate: function(isLive, targets, parentGroup, startTime) {
-		if (!targets.length) {
-			targets = [targets];
-			return this.__animate(isLive, targets, parentGroup, startTime)[0];
+		if (!Array.isArray(targets) && !(targets instanceof NodeList)) {
+			return this.__animate(isLive, [targets], parentGroup, startTime)[0];
 		}
 		return this.__animate(isLive, targets, parentGroup, startTime);
 	},
@@ -89,90 +112,111 @@ var ST_FORCED = 2;
 var TimedItem = Class.create({
 	initialize: function(timing, startTime, parentGroup) {
 		this.timing = new TimingProxy(timing, function() {this.updateIterationDuration()}.bind(this));
-		this.startTime = startTime;
+		this._startTime = startTime;
 		this.updateIterationDuration();
 		this.currentIteration = null;
 		this.iterationTime = null;
 		this.animationTime = null;
 		this._reversing = false;
 
-		if (parentGroup === undefined) {
+		if (typeof parentGroup == "undefined") {
 			this.parentGroup = DEFAULT_GROUP;
 		} else {
-			this.parentGroup = parentGroup;			
+			this.parentGroup = parentGroup;
 		}
 
-		if (startTime == undefined) {
-			this.startTimeMode = ST_AUTO;
+		if (typeof startTime == "undefined") {
+			this._startTimeMode = ST_AUTO;
 			if (this.parentGroup) {
-				this.startTime = this.parentGroup.iterationTime || 0;
+				this._startTime = this.parentGroup.iterationTime || 0;
 			} else {
-				this.startTime = 0;
+				this._startTime = 0;
 			}
 		} else {
-			this.startTimeMode = ST_MANUAL;
-			this.startTime = startTime;
-		}		
-		this.endTime = this.startTime + this.animationDuration + this.timing.startDelay;
+			this._startTimeMode = ST_MANUAL;
+			this._startTime = startTime;
+		}
+		this.endTime = this._startTime + this.animationDuration + this.timing.startDelay;
 		if (this.parentGroup) {
 			this.parentGroup._addChild(this);
 		}
 		this.paused = false;
 		this.timeDrift = 0;
+		this.__defineGetter__("_effectiveParentTime", function() {
+			return this.parentGroup && this.parentGroup.iterationTime
+			  ? this.parentGroup.iterationTime
+			  : 0;
+		});
 		this.__defineGetter__("currentTime", function() {
-			return this.itemTime;
+			return this._effectiveParentTime - this._startTime - this.timeDrift;
 		});
 		this.__defineSetter__("currentTime", function(seekTime) {
-			if (this.parentGroup == null || this.parentGroup.iterationTime == null) {
-				throw "InvalidStateError";
-			}
-			this.timeDrift = this.parentGroup.iterationTime - this.startTime - seekTime;
+			this.timeDrift = this._effectiveParentTime - this._startTime - seekTime;
 			this.updateTimeMarkers();
-			this.parentGroup._childrenStateModified();
-			maybeRestartAnimation();
+			if (this.parentGroup) {
+				this.parentGroup._childrenStateModified();
+			}
+		});
+		this.__defineGetter__("startTime", function() {
+			return this._startTime;
+		});
+		this.__defineSetter__("startTime", function(newStartTime) {
+			if (this.parentGroup && this.parentGroup.type === "seq") {
+				throw "NoModificationAllowedError";
+			}
+			this._startTime = newStartTime;
+			this.updateTimeMarkers();
+			if (this.parentGroup) {
+				this.parentGroup._childrenStateModified();
+			}
 		});
 	},
 	reparent: function(parentGroup) {
-		this.parentGroup.remove(this);
+		if (this.parentGroup) {
+			this.parentGroup.remove(this.parentGroup.indexOf(this), 1);
+		}
 		this.parentGroup = parentGroup;
 		this.timeDrift = 0;
-		if (this.startTimeMode == ST_FORCED) {
-			this.startTime = this.stashedStartTime;;
-			this.startTimeMode = this.stashedStartTimeMode;
+		if (this._startTimeMode == ST_FORCED &&
+			  (!parentGroup || parentGroup != "seq")) {
+			this._startTime = this._stashedStartTime;
+			this._startTimeMode = this._stashedStartTimeMode;
 		}
-		if (this.startTimeMode == ST_AUTO) {
-			this.startTime = this.parentGroup.iterationTime || 0;
-			this.updateTimeMarkers();
-		} 
+		if (this._startTimeMode == ST_AUTO) {
+			this._startTime = this.parentGroup.iterationTime || 0;
+		}
+		this.updateTimeMarkers();
 	},
 	// TODO: take timing.iterationStart into account. Spec needs to as well.
 	updateIterationDuration: function() {
-		if (exists(this.timing.iterationDuration) && this.timing.iterationDuration >= 0) {
-			this.iterationDuration = this.timing.iterationDuration;
+		if (exists(this.timing.duration) && this.timing.duration >= 0) {
+			this.duration = this.timing.duration;
 		} else {
-			this.iterationDuration = this.intrinsicDuration();
+			this.duration = this.intrinsicDuration();
 		}
 		// section 6.7
-		var repeatedDuration = this.iterationDuration * this.timing.iterationCount;
-		if (repeatedDuration == Infinity || this.timing.speed == 0) {
+		var repeatedDuration = this.duration * this.timing.iterationCount;
+		if (repeatedDuration == Infinity || this.timing.playbackRate == 0) {
 			this.animationDuration = Infinity;
 		} else {
-			this.animationDuration = repeatedDuration / Math.abs(this.timing.speed);
+			this.animationDuration = repeatedDuration / Math.abs(this.timing.playbackRate);
 		}
 		this.updateTimeMarkers();
-
-	},
-	updateTimeMarkers: function(time) {
-		this.endTime = this.startTime + this.animationDuration + this.timing.startDelay + this.timeDrift;
 		if (this.parentGroup) {
-			this.itemTime = this.parentGroup.iterationTime - this.startTime - this.timeDrift;
-		} else if (time) {
-			this.itemTime = time;
+			this.parentGroup._childrenStateModified();
+		}
+	},
+	updateTimeMarkers: function(parentTime) {
+		this.endTime = this._startTime + this.animationDuration + this.timing.startDelay + this.timeDrift;
+		if (this.parentGroup && this.parentGroup.iterationTime) {
+			this.itemTime = this.parentGroup.iterationTime - this._startTime - this.timeDrift;
+		} else if (typeof parentTime !== "undefined") {
+			this.itemTime = parentTime;
 		} else {
 			this.itemTime = null;
 		}
 		//console.log(this.name + ": endTime, itemTime", this.endTime, this.itemTime);
-		if (this.itemTime != null) {
+		if (this.itemTime !== null) {
 			if (this.itemTime < this.timing.startDelay) {
 				if (((this.timing.fill == "backwards") && (this._reversing == false)) 
 					|| this.timing.fill == "both" 
@@ -192,7 +236,7 @@ var TimedItem = Class.create({
 					this.animationTime = null;
 				}
 			}
-			if (this.animationTime == null) {
+			if (this.animationTime === null) {
 				var adjustedAnimationTime = null;
 				this.iterationTime = null;
 				this.currentIteration = null;
@@ -200,8 +244,8 @@ var TimedItem = Class.create({
 			} else {
 				var iterationStart = Math.max(0, Math.min(this.timing.iterationStart, this.timing.iterationCount));
 				var iterationCount = Math.max(0, this.timing.iterationCount);
-				var startOffset = iterationStart * this.iterationDuration;
-				var effectiveSpeed = this._reversing ? -this.timing.speed : this.timing.speed;
+				var startOffset = iterationStart * this.duration;
+				var effectiveSpeed = this._reversing ? -this.timing.playbackRate : this.timing.playbackRate;
 				if (effectiveSpeed < 0) {
 					var adjustedAnimationTime = (this.animationTime - this.animationDuration) * effectiveSpeed + startOffset;
 				} else {
@@ -209,20 +253,20 @@ var TimedItem = Class.create({
 				}
 				if (adjustedAnimationTime == 0) {
 					this.currentIteration = 0;
-				} else if (this.iterationDuration == 0) {
+				} else if (this.duration == 0) {
 					this.currentIteration = Math.floor(iterationCount);
 				} else {
-					this.currentIteration = Math.floor(adjustedAnimationTime / this.iterationDuration);
+					this.currentIteration = Math.floor(adjustedAnimationTime / this.duration);
 				}
-				if (this.iterationDuration == 0) {
+				if (this.duration == 0) {
 					var unscaledIterationTime = 0;
 				} else {
-					var repeatedDuration = this.iterationDuration * this.timing.iterationCount;
+					var repeatedDuration = this.duration * this.timing.iterationCount;
 					// TODO: ???
 					if (adjustedAnimationTime - startOffset == repeatedDuration && (iterationCount - iterationStart) % 1 == 0) {
-						var unscaledIterationTime = this.iterationDuration;
+						var unscaledIterationTime = this.duration;
 					} else {
-						var unscaledIterationTime = adjustedAnimationTime % this.iterationDuration;
+						var unscaledIterationTime = adjustedAnimationTime % this.duration;
 					}
 				}
 				var scaledIterationTime = unscaledIterationTime;
@@ -238,12 +282,12 @@ var TimedItem = Class.create({
 					// TODO: 6.11.2 step 3. wtf?
 					var currentDirection = d % 2 == 0 ? 1 : -1;
 				}
-				this.iterationTime = currentDirection == 1 ? scaledIterationTime : this.iterationDuration - scaledIterationTime;
-				this._timeFraction = this.iterationTime / this.iterationDuration;
-				if (this.timing.timingFunction) {
-					this._timeFraction = this.timing.timingFunction.scaleTime(this._timeFraction);
-					this.iterationTime = this._timeFraction * this.iterationDuration;
-				} 		
+				this.iterationTime = currentDirection == 1 ? scaledIterationTime : this.duration - scaledIterationTime;
+				this._timeFraction = this.iterationTime / this.duration;
+				if (this.timing.timingFunc) {
+					this._timeFraction = this.timing.timingFunc.scaleTime(this._timeFraction);
+					this.iterationTime = this._timeFraction * this.duration;
+				}
 			}
 		} else {
 			this.animationTime = null;
@@ -273,12 +317,12 @@ var TimedItem = Class.create({
 	seek: function(itemTime) {
 		// TODO
 	},
-	changeSpeed: function(speed) {
-		timing.speed = speed;
+	changePlaybackRate: function(playbackRate) {
+		timing.playbackRate = playbackRate;
 		// TODO: perform compensatory seek
 	},
 	reverse: function() {
-		if (this.currentTime == null) {
+		if (this.currentTime === null) {
 			var seekTime = 0;
 		} else if (this.currentTime < this.timing.startDelay) {
 			var seekTime = this.timing.startDelay + this.animationDuration;
@@ -292,64 +336,78 @@ var TimedItem = Class.create({
 		this._reversing = !(this._reversing);
 	},
 	cancel: function() {
-		// TODO
+		if (this.parentGroup) {
+			this.parentGroup.remove(this.parentGroup.indexOf(this), 1);
+		}
+		// TODO: Throw an exception if we're part of a template group?
+		// How this should work is still unresolved in the spec
 	},
 	play: function() {
-		this.updateTimeMarkers();
-		if (this.currentTime > this.animationDuration + this.timing.startDelay && this.timing.speed >= 0) {
+		// TODO: This should unpause as well
+		if (this.currentTime > this.animationDuration + this.timing.startDelay && this.timing.playbackRate >= 0) {
 			this.currentTime = this.timing.startDelay;
 		}
 	},
-	// TODO: move this to run on modification of startTime (I think)
-	start: function(timeFromNow) {
-		if (!this.parentGroup) {
-			// TODO: Check spec correctness. Should this be Data.now() + timeFromNow?
-			this.startTime = timeFromNow;
-		} else if (this.parentGroup.type == "seq") {
-			throw "NoModificationAllowedError";
-		} else {
-			this.startTime = this.parentGroup.iterationTime + timeFromNow;
-		}
-		this.updateTimeMarkers();
+	_parentToGlobalTime: function(parentTime) {
+	  if (!this.parentGroup)
+			return parentTime;
+		return parentTime + DEFAULT_GROUP.currentTime -
+												this.parentGroup.iterationTime;
 	},
-	stop: function(timeFromNow) {
-		// TODO: implement
-	}
 });
 
 function keyframesFor(property, startVal, endVal) {
-	var animFun = new KeyframesAnimFunction(property);
+	var animFun = new KeyframeAnimFunc(property);
 	if (startVal) {
-		animFun.frames.add(new AnimFrame(startVal, 0));
+		animFun.frames.add(new Keyframe(startVal, 0));
 	}
-	animFun.frames.add(new AnimFrame(endVal, 1));
+	animFun.frames.add(new Keyframe(endVal, 1));
 	return animFun;
 }
 
 function keyframesForValues(property, values) {
-	var animFun = new KeyframesAnimFunction(property);
+	var animFun = new KeyframeAnimFunc(property);
 	for (var i = 0; i < values.length; i++) {
-		animFun.frames.add(new AnimFrame(values[i], i / (values.length - 1)));
+		animFun.frames.add(new Keyframe(values[i], i / (values.length - 1)));
 	}
 	return animFun;
 }
 
-function completeProperties(properties) {
-	var result = {};
-	if (properties.timing) {
-		result.timing = properties.timing;
+function _interpretAnimFunc(animFunc) {
+	if (animFunc instanceof AnimFunc) {
+		return animFunc;
+	} else if (typeof(animFunc) === "object") {
+		// Test if the object is actually a CustomAnimFunc
+		// (how does WebIDL actually differentiate different callback interfaces?)
+		if (animFunc.hasOwnProperty("sample") &&
+				typeof(animFunc.sample) === "function") {
+			return animFunc;
+		} else {
+			return AnimFunc.createFromProperties(animFunc);
+		}
 	} else {
-		result.timing = new Timing(properties.startDelay, properties.iterationDuration, properties.iterationCount, properties.iterationStart, properties.speed, 
-								   properties.direction, properties.timingFunction, properties.fill);
+		try {
+			throw new Error("TypeError");
+		} catch (e) { console.log(e.stack); throw e; }
 	}
-	if (properties.animFunc) {
-		result.animFunc = properties.animFunc;
-	} else if (properties.to) {
-		result.animFunc = keyframesFor(properties.prop, properties.from, properties.to);
-	} else if (properties.values) {
-		result.animFunc = keyframesForValues(properties.prop, properties.values);
+}
+
+function _interpretTimingParam(timing) {
+	if (typeof(timing) === "undefined" || timing === null) {
+		return new Timing({});
 	}
-	return result;
+	if (timing instanceof Timing || timing instanceof TimingProxy) {
+		return timing;
+	}
+	if (typeof(timing) === "number") {
+		return new Timing({duration: timing});
+	}
+	if (typeof(timing) === "object") {
+		return new Timing(timing);
+	}
+	try {
+		throw new Error("TypeError");
+	} catch (e) { console.log(e.stack); throw e; }
 }
 
 // -----------
@@ -357,39 +415,43 @@ function completeProperties(properties) {
 // -----------
 
 function LinkedAnim(target, template, parentGroup, startTime) {
-	var anim = new Anim(target, {timing: new ImmutableTimingProxy(template.timing), animFunc: template.func, name: template.name}, parentGroup, startTime);
+	var anim = new Anim(target, template.animFunc,
+	                    new ImmutableTimingProxy(template.timing),
+	                    parentGroup, startTime);
 	anim.template = template;
 	template.addLinkedAnim(anim);
 	return anim;
 }
 
 function ClonedAnim(target, cloneSource, parentGroup, startTime) {
-	var anim = new Anim(target, {timing: cloneSource.timing.clone(), animFunc: cloneSource.func.clone()}, parentGroup, startTime);
+	var anim = new Anim(target, cloneSource.timing.clone(),
+	                    cloneSource.animFunc.clone(), parentGroup, startTime);
 }
 
-RC_SET_VALUE = 1;
-RC_ANIMATION_FINISHED = 2;
-
 var Anim = Class.create(TimedItem, {
-	initialize: function($super, target, properties, parentGroup, startTime) {
-		var completedProperties = completeProperties(properties);
-		$super(completedProperties.timing, startTime, parentGroup);
-		this.func = completedProperties.animFunc;
-		if (!this.func) {
-			try { throw "Anim Without Animation Function!" } catch (e) { console.log(e.stack); throw e; }
-		}
+	initialize: function($super, target, animFunc, timing, parentGroup, startTime) {
+		this.animFunc = _interpretAnimFunc(animFunc);
+		this.timing = _interpretTimingParam(timing);
+
+		$super(this.timing, startTime, parentGroup);
+
 		// TODO: correctly extract the underlying value from the element
-		this.underlyingValue = this.func.getValue(target);
+		this.underlyingValue = null;
+		if (target && this.animFunc instanceof AnimFunc) {
+			this.underlyingValue = this.animFunc.getValue(target);
+		}
 		this.template = null;
 		this.targetElement = target;
-		this.name = properties.name || (target ? target.id : "<untargeted>") || "<anon>";
+		this.name = this.animFunc instanceof KeyframeAnimFunc
+		          ? this.animFunc.property
+		          : "<anon>";
 	},
 	unlink: function() {
 		var result = this.template;
 		if (result) {
 			this.timing = this.timing.extractMutableTiming();
-			// TODO: Does func need to have a FuncProxy too?
-			this.func = this.func.clone();
+			// TODO: Does animFunc need to have a FuncProxy too?
+			this.animFunc = this.animFunc.clone();
 			this.template.removeLinkedAnim(this);
 		}
 		this.template = null;
@@ -400,9 +462,13 @@ var Anim = Class.create(TimedItem, {
 			return this.template;
 		}
 		// TODO: What resolution strategy, if any, should be employed here?
-		var template = new AnimTemplate({animFunc: this.func.clone(), timing: this.timing.clone()});
+		var animFunc = this.animFunc
+			? this.animFunc.hasOwnProperty('clone')
+				? this.animFunc.clone() : this.animFunc
+			: null;
+		var template = new AnimTemplate(animFunc, this.timing.clone());
 		this.template = template;
-		this.func = template.func;
+		this.animFunc = template.animFunc;
 		this.timing = new ImmutableTimingProxy(template.timing);
 		this.template.addLinkedAnim(this);
 		return template;
@@ -412,39 +478,51 @@ var Anim = Class.create(TimedItem, {
 		return Infinity;
 	},
 	_zero: function() {
-		this.func.zeroPoint(this.targetElement, this.underlyingValue);
+	  if (this.animFunc instanceof AnimFunc) {
+			this.animFunc.zeroPoint(this.targetElement, this.underlyingValue);
+		}
 		//this.targetElement.innerHTML = "ZERO"
 	},
-	_tick: function(time) {
+	_getSampleFuncs: function() {
+		var prevTimeFraction = this._timeFraction;
 		this.updateTimeMarkers();
-		var rc = 0;
-		if (this._timeFraction != null) {
-			rc |= RC_SET_VALUE;
-			this.func.sample(this._timeFraction, this.currentIteration, this.targetElement, this.underlyingValue);
-			//this.targetElement.innerHTML = this._timeFraction + ": " + this.currentIteration;
-		} else {
-			this._zero();
-		}
-		if (time > this.endTime) {
-			rc |= RC_ANIMATION_FINISHED;
-		}
-		return rc;
+
+		if (this._timeFraction === null)
+			return new Array();
+
+		var rv = { startTime: this._parentToGlobalTime(this.startTime),
+			target: this.targetElement,
+			clearFunc: function() { this._zero(); }.bind(this),
+			sampleFunc:
+				function() {
+					if (this.animFunc instanceof AnimFunc) {
+						this.animFunc.sample(this._timeFraction,
+							this.currentIteration, this.targetElement,
+							this.underlyingValue);
+					} else if (this.animFunc) {
+						this.animFunc.sample.call(this.animFunc, this._timeFraction,
+							this.currentIteration, this.targetElement);
+					}
+				}.bind(this)
+		};
+		return new Array(rv);
 	},
 	toString: function() {
-		return "Anim " + this.startTime + "-" + this.endTime + " (" + this.timeDrift+ ") " + this.func.toString();
+		var funcDescr = this.animFunc instanceof AnimFunc
+			? this.animFunc.toString()
+			: "Custom scripted function";
+		return "Anim " + this.startTime + "-" + this.endTime + " (" + this.timeDrift+ ") " + funcDescr;
 	}
 });
 
 var AnimTemplate = Class.create(TimedTemplate, {
-	initialize: function($super, properties, resolutionStrategy) {
-		var completedProperties = completeProperties(properties);
-		$super(completedProperties.timing);
-		this.func = completedProperties.animFunc;
-		if (!this.func) {
-			try { throw "AnimTemplate Without Animation Function!" } catch (e) { console.log(e.stack); throw e; }			
-		}
+	initialize: function($super, animFunc, timing, resolutionStrategy) {
+		this.animFunc = _interpretAnimFunc(animFunc);
+		this.timing = _interpretTimingParam(timing);
+		$super(this.timing);
 		this.resolutionStrategy = resolutionStrategy;
-		this.name = properties.name;
+		// TODO: incorporate name into spec?
+		// this.name = properties.name;
 	},
 	reparent: function(parentGroup) {
 		// TODO: does anything need to happen here?
@@ -456,13 +534,15 @@ var AnimTemplate = Class.create(TimedTemplate, {
 			switch (strategy[0]) {
 				case "selector":
 					[].forEach.call(targets, function(target) {
+						var id;
+						var removeId;
 						if (target.id) {
-							var id = target.id;
-							var removeId = false;
+							id = target.id;
+							removeId = false;
 						} else {
-							var id = "___special_id_for_resolution_0xd3adb33f";
+							id = "___special_id_for_resolution_0xd3adb33f";
 							target.id = id;
-							var removeId = true;
+							removeId = true;
 						}
 						selector = "#" + id + " " + strategy[1];
 						var selectResult = document.querySelectorAll(selector);
@@ -482,7 +562,7 @@ var AnimTemplate = Class.create(TimedTemplate, {
 		}
 
 		var instances = [];
-		targets.forEach(function(target) {
+		[].forEach.call(targets, function(target) {
 			var instance = LinkedAnim(target, this, parentGroup, startTime);
 			if (!isLive) {
 				instance.unlink();
@@ -492,28 +572,6 @@ var AnimTemplate = Class.create(TimedTemplate, {
 		return instances;
 	}
 });
-
-// TODO: lose this now?
-function animate(targets, properties, startTime) {
-	var unwrapOnReturn = false;
-	if (!targets.length) {
-		targets = [targets];
-		unwrapOnReturn = true;
-	}
-
-	var instances = [];
-
-	[].forEach.call(targets, function(target) {
-		instances.push(new Anim(target, properties, DEFAULT_GROUP, startTime));
-		DEFAULT_GROUP.add(instances[instances.length - 1]);
-	});
-
-	if (unwrapOnReturn) {
-		return instances[0];
-	}
-
-	return instances;
-}
 
 // To use this, need to have children and length member variables.
 var AnimListMixin = {
@@ -546,17 +604,12 @@ var AnimListMixin = {
 		}
 	},
 	add: function() {
-		this.beforeListChange();
+		var newItems = [];
 		for (var i = 0; i < arguments.length; i++) {
-			arguments[i].reparent(this);
-			this.children.push(arguments[i]);
+			newItems.push(arguments[i]);
 		}
-		var oldLength = this.length;
-		this.length = this.children.length;
-		this._createIdxAccessors(oldLength, this.length);
-		this.onListChange();
-		return arguments;
-		// TODO: Remove newItem from other group. Update timing?
+		this.splice(this.length, 0, newItems);
+		return newItems;
 	},
 	// Specialized add method so that templated groups can still have children added by the library.
 	_addChild: function(child) {
@@ -565,24 +618,12 @@ var AnimListMixin = {
 		this.length = this.children.length;
 		this.onListChange();
 	},
-	insertBefore: function(newItem, refItem) {
-		this.beforeListChange();
-		for (var i = 0; i < this.children.length; i++) {
-			if (this.children[i] == refItem) {
-				this.children.splice(i, 0, newItem);
-				// TODO: Remove newItem from other group. Update timing?
-				this.length = this.children.length;
-				return newItem;
-			}
-		}
-		return add(newItem);
-	},
 	item: function(index) {
 		return this.children[index];
 	},
 	indexOf: function(item) {
 		for (var i = 0; i < this.children.length; i++) {
-			if (this.children[i] == item) {
+			if (this.children[i] === item) {
 				return i;
 			}
 		}
@@ -590,41 +631,81 @@ var AnimListMixin = {
 	},
 	splice: function() {
 		this.beforeListChange();
-		for (var i = 2; i < arguments.length; i++) {
-			arguments[i].reparent(this);
-		}
-		this.children.splice.apply(this.children, arguments);
-		var oldLength = this.length;
-		this.length = this.children.length;
-		this._createIdxAccessors(oldLength, this.length);
-		this.onListChange();
-	},
-	remove: function(removedItem) {
-		this.beforeListChange();
-		for (var i = 0; i < this.children.length; i++) {
-			if (this.children[i] == removedItem) {
-				this.children.splice(i, 1);
-				this.length = this.children.length;
-				this._deleteIdxAccessors(this.length, this.length + 1);
-				return removedItem;
+
+		// Read params
+		var start = arguments[0];
+		var deleteCount = arguments[1];
+		var newItems = [];
+		if (Array.isArray(arguments[2])) {
+			newItems = arguments[2];
+		} else {
+			for (var i = 2; i < arguments.length; i++) {
+				newItems.push(arguments[i]);
 			}
 		}
+
+		var removedItems = new Array();
+		var len = this.length;
+
+		// Interpret params
+		var actualStart = start < 0
+		                ? Math.max(len + start, 0)
+		                : Math.min(start, len);
+		var actualDeleteCount =
+			Math.min(Math.max(deleteCount, 0), len - actualStart);
+
+		// Reparent items
+		for (var i = 0; i < newItems.length; i++) {
+			newItems[i].reparent(this);
+		}
+
+		// Delete stage
+		if (actualDeleteCount) {
+			removedItems = this.children.splice(actualStart, actualDeleteCount);
+			for (var i = 0; i < removedItems.length; i++) {
+				removedItems[i].parentGroup = null;
+			}
+			this._deleteIdxAccessors(actualStart, actualStart + actualDeleteCount);
+		}
+
+		// Add stage
+		if (newItems.length) {
+			for (var i = 0; i < newItems.length; i++) {
+				this.children.splice(actualStart+i, 0, newItems[i]);
+			}
+			this._createIdxAccessors(actualStart, actualStart + newItems.length);
+		}
+
+		this.length = this.children.length;
 		this.onListChange();
-		return null;
+
+		return removedItems;
+	},
+	remove: function(index, count) {
+		if (typeof count === "undefined") {
+			count = 1;
+		}
+		return this.splice(index, count);
 	}
 }
 
 var AnimGroup = Class.create(TimedItem, AnimListMixin, {
-	initialize: function($super, type, template, properties, startTime, parentGroup) {
+	initialize: function($super, type, template, children, timing, startTime, parentGroup) {
 		this.type = type || "par"; // used by TimedItem via intrinsicDuration(), so needs to be set before initializing super.
 		this.initListMixin(this._assertNotLive, this._childrenStateModified);
-		var completedProperties = completeProperties(properties);
-		$super(completedProperties.timing, startTime, parentGroup);
+		var completedTiming = _interpretTimingParam(timing);
+		$super(completedTiming, startTime, parentGroup);
 		this.template = template;
 		if (template) {
 			template.addLinkedAnim(this);
 		}
-		this.name = properties.name || "<anon>";
+		if (children && Array.isArray(children)) {
+			for (var i = 0; i < children.length; i++) {
+				this.add(children[i]);
+			}
+		}
+		// TODO: Work out where to expose name in the API
+		// this.name = properties.name || "<anon>";
 	},
 	_assertNotLive: function() {
 		if (this.template) {
@@ -633,8 +714,10 @@ var AnimGroup = Class.create(TimedItem, AnimListMixin, {
 	},
 	templatize: function() {
 		if (!this.template) {
-			var properties = {timing: this.timing.clone()};
-			var template = this.type == "par" ? new ParAnimGroupTemplate(properties) : new SeqAnimGroupTemplate(properties);
+			var timing = this.timing.clone();
+			var template = this.type == "par"
+				? new ParAnimGroupTemplate(null, timing)
+				: new SeqAnimGroupTemplate(null, timing);
 			this.timing = new ImmutableTimingProxy(template.timing);
 			for (var i = 0; i < this.children.length; i++) {
 				template.add(this.children[i].templatize());
@@ -658,10 +741,12 @@ var AnimGroup = Class.create(TimedItem, AnimListMixin, {
 		if (this.type == "seq") {
 			var cumulativeStartTime = 0;
 			this.children.forEach(function(child) {
-				child.stashedStartTime = child.startTime;
-				child.stashedStartTimeMode = child.startTimeMode;
-				child.startTime = cumulativeStartTime;
-				child.startTimeMode = ST_FORCED;
+				if (child._startTimeMode != ST_FORCED) {
+					child._stashedStartTime = child._startTime;
+					child._stashedStartTimeMode = child._startTimeMode;
+					child._startTimeMode = ST_FORCED;
+				}
+				child._startTime = cumulativeStartTime;
 				child.updateTimeMarkers();
 				cumulativeStartTime += Math.max(0, child.timing.startDelay + child.animationDuration);
 			}.bind(this));
@@ -678,11 +763,11 @@ var AnimGroup = Class.create(TimedItem, AnimListMixin, {
 	},
 	getActiveAnimations: function() {
 		var result = [];
-		if (this._timeFraction == null) {
+		if (this._timeFraction === null) {
 			return result;
 		}
 		for (var i = 0; i < this.children.length; i++) {
-			if (this.children[i]._timeFraction != null) {
+			if (this.children[i]._timeFraction !== null) {
 				if (this.children[i].getActiveAnimations) {
 					result = result.concat(this.children[i].getActiveAnimations());
 				} else {
@@ -718,25 +803,13 @@ var AnimGroup = Class.create(TimedItem, AnimListMixin, {
 	_zero: function() {
 		this.children.forEach(function(child) { child._zero(); });
 	},
-	_tick: function(time) {
+	_getSampleFuncs: function() {
 		this.updateTimeMarkers();
-		if (this._timeFraction == null) {
-			this._zero();
-			return time > this.endTime ? RC_ANIMATION_FINISHED : 0;
-		} else {
-			var set = 0;
-			var end = time > this.endTime ? RC_ANIMATION_FINISHED : 0;
-			this.children.forEach(function(child) {
-				var r = child._tick((time - this.startTime - this.timing.startDelay - this.timeDrift) * this.timing.speed); 
-				if (!(r & RC_ANIMATION_FINISHED)) {
-					end = 0;
-				}
-				if (r & RC_SET_VALUE) {
-					set = RC_SET_VALUE;
-				}
-			}.bind(this));
-			return set | end;
-		}
+		var sampleFuncs = [];
+		this.children.forEach(function(child) {
+			sampleFuncs = sampleFuncs.concat(child._getSampleFuncs());
+		}.bind(this));
+		return sampleFuncs;
 	},
 	toString: function() {
 		return this.type + " " + this.startTime + "-" + this.endTime + " (" + this.timeDrift+ ") " + " [" + this.children.map(function(a) { return a.toString(); }) + "]"
@@ -744,25 +817,28 @@ var AnimGroup = Class.create(TimedItem, AnimListMixin, {
 });
 
 var ParAnimGroup = Class.create(AnimGroup, {
-	initialize: function($super, properties, parentGroup, startTime) {
-		$super("par", undefined, properties, startTime, parentGroup);
+	initialize: function($super, children, timing, parentGroup, startTime) {
+		$super("par", undefined, children, timing, startTime, parentGroup);
 	}
 });
 
 var SeqAnimGroup = Class.create(AnimGroup, {
-	initialize: function($super, properties, parentGroup, startTime) {
-		$super("seq", undefined, properties, startTime, parentGroup);
+	initialize: function($super, children, timing, parentGroup, startTime) {
+		$super("seq", undefined, children, timing, startTime, parentGroup);
 	}
 });
 
 var AnimGroupTemplate = Class.create(TimedTemplate, AnimListMixin, {
-	initialize: function($super, type, properties, resolutionStrategy) {
-		var completedProperties = completeProperties(properties);
-		$super(completedProperties.timing);
+	initialize: function($super, type, children, timing, resolutionStrategy) {
+		$super(timing);
 		this.type = type;
 		this.resolutionStrategy = resolutionStrategy;
 		this.initListMixin(function() {}, function() {});
-		this.name = properties.name;
+		if (children && Array.isArray(children)) {
+			for (var i = 0; i < children.length; i++) {
+				this.add(children[i]);
+			}
+		}
 	},
 	reparent: function(parentGroup) {
 		// TODO: does anything need to happen here?
@@ -770,7 +846,7 @@ var AnimGroupTemplate = Class.create(TimedTemplate, AnimListMixin, {
 	__animate: function($super, isLive, targets, parentGroup, startTime) {
 		var instances = [];
 		for (var i = 0; i < targets.length; i++) {
-			var instance = new AnimGroup(this.type, this, {timing: this.timing, name: this.name}, startTime, parentGroup);
+			var instance = new AnimGroup(this.type, this, [], this.timing, startTime, parentGroup);
 			if (!isLive) {
 				instance.unlink();
 			}
@@ -788,18 +864,18 @@ var AnimGroupTemplate = Class.create(TimedTemplate, AnimListMixin, {
 });
 
 var ParAnimGroupTemplate = Class.create(AnimGroupTemplate, {
-	initialize: function($super, properties, resolutionStrategy) {
-		$super("par", properties, resolutionStrategy);
+	initialize: function($super, children, timing, resolutionStrategy) {
+		$super("par", children, timing, resolutionStrategy);
 	}
 });
 
 var SeqAnimGroupTemplate = Class.create(AnimGroupTemplate, {
-	initialize: function($super, properties, resolutionStrategy) {
-		$super("seq", properties, resolutionStrategy);
+	initialize: function($super, children, properties, resolutionStrategy) {
+		$super("seq", children, properties, resolutionStrategy);
 	}
 });
 
-var AnimFunction = Class.create({
+var AnimFunc = Class.create({
 	initialize: function(operation, accumulateOperation) {
 		this.operation = operation | "replace";
 		this.accumulateOperation = accumulateOperation | "replace";
@@ -818,34 +894,66 @@ var AnimFunction = Class.create({
 	}
 });
 
-var JavaScriptAnimFunction = Class.create(AnimFunction, {
-	initialize: function($super, getValue, zero, sample, operation, accumulateOperation) {
-		$super(operation, accumulateOperation);
-		this.getValue = getValue;
-		this.zeroPoint = zero;
-		this.sample = sample;
-	},
-	clone: function() {
-		return new JavaScriptAnimFunction(this.getValue, this.zeroPoint, this.sample, this.operation, this.accumulateOperation);
-	},
-	toString: function() {
-		return "CustomJS!";
+AnimFunc.createFromProperties = function(properties) {
+	// Step 1 - determine set of animation properties
+	var animProps = [];
+	for (var candidate in properties) {
+		if (supportedProperties.hasOwnProperty(candidate)) {
+			animProps.push(candidate);
+		}
 	}
-});
 
-var loggerAnimFunction = new JavaScriptAnimFunction(
-		function(elem) {return elem.innerHTML;}, 
-		function(elem, underlying) {elem.innerHTML = underlying;},
-		function(tf, iter, elem, underlying) {
-			if (tf != undefined) {elem.innerHTML = iter + ": " + Math.floor(tf * 100) / 100;} 
-			else {elem.innerHTML = underlying;}}
-	);
+	// Step 2 - Create AnimFunc objects
+	if (animProps.length === 0) {
+		return null;
+	} else if (animProps.length === 1) {
+		return AnimFunc._createKeyframeFunc(animProps[0], properties[animProps[0]]);
+	} else {
+		// TODO: GroupAnimFunc
+		try {
+			throw new Error("UnsupportedError");
+		} catch (e) { console.log(e.stack); throw e; }
+	}
+}
 
-var KeyframesAnimFunction = Class.create(AnimFunction, {
+// Step 3 - Create a KeyframeAnimFunc object
+AnimFunc._createKeyframeFunc = function(property, value) {
+	var func = new KeyframeAnimFunc(property);
+
+	if (typeof value === "string") {
+		func.frames.add(new Keyframe(value, 1));
+	} else if (typeof value === "number") {
+		// TODO: This is not in the spec, should it be?
+		func.frames.add(new Keyframe(String(value), 1));
+	} else if (Array.isArray(value)) {
+		for (var i = 0; i < value.length; i++) {
+			if (typeof value[i] === "number") {
+				// TODO: This is not in the spec, should it be?
+				value[i] = String(value[i]);
+
+			} else if (typeof value[i] !== "string") {
+				try {
+					throw new Error("TypeError");
+				} catch (e) { console.log(e.stack); throw e; }
+			}
+			var offset = i / (value.length - 1);
+			func.frames.add(new Keyframe(value[i], offset));
+		}
+	} else {
+		try {
+			throw new Error("TypeError");
+		} catch (e) { console.log(e.stack); throw e; }
+	}
+	// TODO: Need to handle KeyframeDict objects once they're defined
+
+	return func;
+}
+
+var KeyframeAnimFunc = Class.create(AnimFunc, {
 	initialize: function($super, property, operation, accumulateOperation) {
 		$super(operation, accumulateOperation);
 		this.property = property;
-		this.frames = new AnimFrameList();
+		this.frames = new KeyframeList();
 	},
 	sortedFrames: function() {
 		this.frames.frames.sort(function(a, b) {
@@ -869,6 +977,10 @@ var KeyframesAnimFunction = Class.create(AnimFunction, {
 		var i = 0;
 		while (i < frames.length) {
 			if (frames[i].offset == timeFraction) {
+				// TODO: This should probably call fromCssValue and toCssValue for cases
+				// where we have to massage the data before setting e.g. 'rotate(45deg)'
+				// is valid, but for UAs that don't support CSS Transforms syntax on SVG
+				// content we have to convert that to 'rotate(45)' before setting.
 				setValue(target, this.property, frames[i].value);
 				return;
 			}
@@ -879,10 +991,26 @@ var KeyframesAnimFunction = Class.create(AnimFunction, {
 			i++;
 		}
 		if (afterFrameNum == 0) {
-			beforeFrameNum = -1;
+			// In the case where we have a negative time fraction and a keyframe at
+			// offset 0, the expected behavior is to extrapolate the interval that
+			// starts at 0, rather than to use the underlying value.
+			if (frames[0].offset === 0) {
+				afterFrameNum = frames.length > 1 ? 1 : frames.length;
+				beforeFrameNum = 0;
+			} else {
+				beforeFrameNum = -1;
+			}
 		} else if (afterFrameNum == null) {
-			beforeFrameNum = frames.length - 1;
-			afterFrameNum = frames.length;
+			// In the case where we have a time fraction greater than 1 and a keyframe
+			// at 1, the expected behavior is to extrapolate the interval that ends at
+			// 1, rather than to use the underlying value.
+			if (frames[frames.length-1].offset === 1) {
+				afterFrameNum = frames.length - 1;
+				beforeFrameNum = frames.length > 1 ? frames.length - 2 : -1;
+			} else {
+				beforeFrameNum = frames.length - 1;
+				afterFrameNum = frames.length;
+			}
 		} else {
 			beforeFrameNum = afterFrameNum - 1;
 		}
@@ -910,7 +1038,7 @@ var KeyframesAnimFunction = Class.create(AnimFunction, {
 		return getValue(target, this.property);
 	},
 	clone: function() {
-		var result = new KeyframesAnimFunction(this.property, this.operation, this.accumulateOperation);
+		var result = new KeyframeAnimFunc(this.property, this.operation, this.accumulateOperation);
 		result.frames = this.frames.clone();
 		return result;
 	},
@@ -919,15 +1047,15 @@ var KeyframesAnimFunction = Class.create(AnimFunction, {
 	}
 });
 
-var AnimFrame = Class.create({
-	initialize: function(value, offset, timingFunction) {
+var Keyframe = Class.create({
+	initialize: function(value, offset, timingFunc) {
 		this.value = value;
 		this.offset = offset;
-		this.timingFunction = timingFunction;
+		this.timingFunc = timingFunc;
 	}
 });
 
-var AnimFrameList = Class.create({
+var KeyframeList = Class.create({
 	initialize: function() {
 		this.frames = [];
 		this.__defineGetter__("length", function() {return this.frames.length; });
@@ -951,9 +1079,9 @@ var AnimFrameList = Class.create({
 		return frame;
 	},
 	clone: function() {
-		var result = new AnimFrameList();
+		var result = new KeyframeList();
 		for (var i = 0; i < this.frames.length; i++) {
-			result.add(new AnimFrame(this.frames[i].value, this.frames[i].offset, this.frames[i].timingFunction));
+			result.add(new Keyframe(this.frames[i].value, this.frames[i].offset, this.frames[i].timingFunc));
 		}
 		return result;
 	}
@@ -964,7 +1092,7 @@ var presetTimings = {
 	"ease-out" : [0, 0, 0.58, 1.0]
 }
 
-var TimingFunction = Class.create({
+var TimingFunc = Class.create({
 	initialize: function(spec) {
 		if (spec.length == 4) {
 			this.params = spec;
@@ -990,45 +1118,69 @@ var TimingFunction = Class.create({
 		var xDiff = this.map[fst][0] - this.map[fst - 1][0];
 		var p = (fraction - this.map[fst - 1][0]) / xDiff;
 		return this.map[fst - 1][1] + p * yDiff;
-	}
+	},
+	clone: function() {
+		return new TimingFunc(this.params);
+  }
 });
 
 function _interp(from, to, f) {
 	if (Array.isArray(from) || Array.isArray(to)) {
 		return _interpArray(from, to, f);
 	}
+	to   = to   || 0.0;
+	from = from || 0.0;
 	return to * f + from * (1 - f);
 }
 
 function _interpArray(from, to, f) {
-	console.assert(Array.isArray(from), "From is not an array");
-	console.assert(Array.isArray(to), "To is not an array");
-	console.assert(from.length === to.length, "Arrays differ in length");
+	console.assert(Array.isArray(from) || from === null,
+		"From is not an array or null");
+	console.assert(Array.isArray(to) || to === null,
+		"To is not an array or null");
+	console.assert(from === null || to === null || from.length === to.length,
+		"Arrays differ in length");
+	var length = from ? from.length : to.length;
 
 	var result = [];
-	for (var i = 0; i < from.length; i++) {
-		result[i] = _interp(from[i], to[i], f);
+	for (var i = 0; i < length; i++) {
+		result[i] = _interp(from ? from[i] : 0.0, to ? to[i] : 0.0, f);
 	}
 	return result;
 }
 
+var supportedProperties = new Array();
+supportedProperties["opacity"] = { type: "number", isSVGAttrib: false };
+supportedProperties["left"]    = { type: "length", isSVGAttrib: false };
+supportedProperties["top"]     = { type: "length", isSVGAttrib: false };
+supportedProperties["cx"]      = { type: "length", isSVGAttrib: true };
+
+// For browsers that support transform as a style attribute on SVG we can
+// set isSVGAttrib to false
+supportedProperties["transform"] = { type: "transform", isSVGAttrib: true };
+supportedProperties["-webkit-transform"] =
+	{ type: "transform", isSVGAttrib: false };
+
 function propertyIsNumber(property) {
-	return ["opacity"].indexOf(property) != -1;
+	var propDetails = supportedProperties[property];
+	return propDetails && propDetails.type === "number";
 }
 
 function propertyIsLength(property) {
-	return ["left", "top", "cx"].indexOf(property) != -1;
+	var propDetails = supportedProperties[property];
+	return propDetails && propDetails.type === "length";
 }
 
 function propertyIsTransform(property) {
-	return ["-webkit-transform", "transform"].indexOf(property) != -1;
+	var propDetails = supportedProperties[property];
+	return propDetails && propDetails.type === "transform";
 }
 
 function propertyIsSVGAttrib(property, target) {
-	// For browsers that support transform as a style attribute on SVG we can
-	// remove transform from the list below
-	return target.namespaceURI == "http://www.w3.org/2000/svg" &&
-	       ["cx", "transform"].indexOf(property) != -1;
+	if (target.namespaceURI !== "http://www.w3.org/2000/svg")
+		return false;
+	var propDetails = supportedProperties[property];
+	return propDetails && propDetails.isSVGAttrib;
 }
 
 /**
@@ -1049,8 +1201,12 @@ function interpolate(property, target, from, to, f) {
 	} else if (propertyIsLength(property)) {
 		return toCssValue(property, [_interp(from[0], to[0], f), "px"], svgMode);
 	} else if (propertyIsTransform(property)) {
+		console.assert(from[0].t === to[0].t || from[0].t === null ||
+			to[0].t === null,
+			"Transform types should match or one should be the underlying value");
+		var type = from[0].t ? from[0].t : to[0].t;
 		return toCssValue(property,
-			[{t: from[0].t, d:_interp(from[0].d, to[0].d, f)}], svgMode)
+			[{t: type, d:_interp(from[0].d, to[0].d, f)}], svgMode)
 	} else {
 		throw "UnsupportedProperty";
 	}
@@ -1068,18 +1224,29 @@ function toCssValue(property, value, svgMode) {
 		return value[0] + value[1];
 	} else if (propertyIsTransform(property)) {
 		// TODO: fix this :)
+		console.assert(value[0].t, "transform type should be resolved by now");
 		switch (value[0].t) {
 			case "rotate":
 			case "rotateY":
+			{
 				var unit = svgMode ? "" : "deg";
 				return value[0].t + "(" + value[0].d + unit + ")";
+			}
 			case "translate":
+			{
 				var unit = svgMode ? "" : "px";
 				if (value[0].d[1] === 0) {
 					return value[0].t + "(" + value[0].d[0] + unit + ")";
 				} else {
 					return value[0].t + "(" + value[0].d[0] + unit + ", " +
-					       value[0].d[1] + unit + ")";
+								 value[0].d[1] + unit + ")";
+				}
+			}
+			case "scale":
+				if (value[0].d[0] === value[0].d[1]) {
+					return value[0].t + "(" + value[0].d[0] + ")";
+				} else {
+					return value[0].t + "(" + value[0].d[0] + ", " + value[0].d[1] + ")";
 				}
 		}
 	} else {
@@ -1108,19 +1275,28 @@ function extractTranslationValues(lengths) {
 	return [length1, length2];
 }
 
+function extractScaleValues(scales) {
+	var scaleX = Number(scales[1]);
+	var scaleY = scales[2] ? Number(lengths[2]) : scaleX;
+	return [scaleX, scaleY];
+}
+
 var transformREs =
 	[
-		[/rotate\(([+-]?(?:\d+|\d*\.\d+))(deg|grad|rad|turn)\)/, extractDeg, "rotate"],
+		[/rotate\(([+-]?(?:\d+|\d*\.\d+))(deg|grad|rad|turn)?\)/, extractDeg, "rotate"],
 		[/rotateY\(([+-]?(?:\d+|\d*\.\d+))(deg|grad|rad|turn)\)/, extractDeg, "rotateY"],
-		[/translate\(([+-]?(?:\d+|\d*\.\d+))(px)?(?:\s*,\s*(-?(?:\d+|\d*\.\d+))(px)?)?\)/,
-		 extractTranslationValues, "translate"]
+		[/translate\(([+-]?(?:\d+|\d*\.\d+))(px)?(?:\s*,\s*([+-]?(?:\d+|\d*\.\d+))(px)?)?\)/,
+		 extractTranslationValues, "translate"],
+		[/scale\((\d+|\d*\.\d+)(?:\s*,\s*(\d+|\d*.\d+))?\)/, extractScaleValues, "scale"]
 	];
 
 function fromCssValue(property, value) {
 	if (propertyIsNumber(property)) {
-		return Number(value);
+		return value !== "" ? Number(value) : null;
 	} else if (propertyIsLength(property)) {
-		return [Number(value.substring(0, value.length - 2)), "px"];
+		return value !== ""
+		       ? [Number(value.substring(0, value.length - 2)), "px"]
+		       : [null, null];
 	} else if (propertyIsTransform(property)) {
 		// TODO: fix this :)
 		for (var i = 0; i < transformREs.length; i++) {
@@ -1130,6 +1306,7 @@ function fromCssValue(property, value) {
 				return [{t: reSpec[2], d: reSpec[1](r)}];
 			}
 		}
+		return [{t: null, d: null}];
 	} else {
 		throw "UnsupportedProperty";
 	}
@@ -1153,16 +1330,40 @@ function getValue(target, property) {
 
 var rAFNo = undefined;
 
-var DEFAULT_GROUP = new AnimGroup("par", undefined, {fill: "forwards", name: "DEFAULT"}, 0, undefined);
-DEFAULT_GROUP._tick = function(time) {
-		this.updateTimeMarkers(time);
+var DEFAULT_GROUP = new AnimGroup("par", null, [], {fill: "forwards", name: "DEFAULT"}, 0, undefined);
+
+DEFAULT_GROUP.oldFuncs = new Array();
+
+DEFAULT_GROUP._tick = function(parentTime) {
+		this.updateTimeMarkers(parentTime);
+
+		// Clear old effect in reverse
+		for (var i = this.oldFuncs.length - 1; i >= 0; i--) {
+			if (this.oldFuncs[i].hasOwnProperty('clearFunc')) {
+				this.oldFuncs[i].clearFunc();
+			}
+		}
+
+		// Get animations for this sample
+		var funcs = new Array();
 		var allFinished = true;
 		this.children.forEach(function(child) {
-			var r = child._tick(time); 
-			if (!(r & RC_ANIMATION_FINISHED)) {
-				allFinished = false;
-			}
+			funcs = funcs.concat(child._getSampleFuncs());
+			allFinished &= parentTime > child.endTime;
 		}.bind(this));
+
+		// Apply animations in order
+		funcs.sort(function(funcA, funcB) {
+			return funcA.startTime < funcB.startTime
+				? -1
+				: funcA.startTime === funcB.startTime ? 0 : 1;
+		});
+		for (var i = 0; i < funcs.length; i++) {
+			if (funcs[i].hasOwnProperty('sampleFunc')) {
+				funcs[i].sampleFunc();
+			}
+		}
+		this.oldFuncs = funcs;
 
 		return !allFinished;
 }
