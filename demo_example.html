@@ -33,16 +33,21 @@ limitations under the License.
 	width: 200px;
 	-webkit-transform: rotateY(0deg);
 	-webkit-transform-style: preserve-3d;
+	-moz-transform: rotateY(0deg);
+	-moz-transform-style: preserve-3d;
 }
 
 .doorContainer {
 	-webkit-transform-style: preserve-3d;
 	-webkit-perspective: 1000px;
+	-moz-transform-style: preserve-3d;
+	-moz-perspective: 1000px;
 	top: 50px;
 	width: 200px;
 	height: 200px;
 	position: absolute;
 	-webkit-perspective-origin: right center;
+	-moz-perspective-origin: right center;
 }
 
 .right {
@@ -58,6 +63,7 @@ limitations under the License.
 	height: 75px;
 	border: solid 1px black;
 	-webkit-transform: rotate(0deg);
+	-moz-transform: rotate(0deg);
 }
 
 .dust {
@@ -115,7 +121,7 @@ var a = undefined;
 
 function first() {
 	a = new Anim(document.querySelector(".doorSpacer"),
-		{ '-webkit-transform': [ 'rotateY(0deg)', 'rotateY(100deg)' ] }, 2);
+		{ '-moz-transform': [ 'rotateY(0deg)', 'rotateY(100deg)' ] }, 2);
 }
 
 function second() {

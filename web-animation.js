@@ -1169,6 +1169,8 @@ supportedProperties["cx"]      = { type: "length", isSVGAttrib: true };
 supportedProperties["transform"] = { type: "transform", isSVGAttrib: true };
 supportedProperties["-webkit-transform"] =
 	{ type: "transform", isSVGAttrib: false };
+supportedProperties["-moz-transform"] =
+	{ type: "transform", isSVGAttrib: false, stylePropertyName:"MozTransform" };
 
 function propertyIsNumber(property) {
 	var propDetails = supportedProperties[property];
@@ -1325,6 +1327,9 @@ function setValue(target, property, value) {
 	if (propertyIsSVGAttrib(property, target)) {
 		target.setAttribute(property, value);
 	} else {
+		if (supportedProperties[property].stylePropertyName) {
+			property = supportedProperties[property].stylePropertyName;
+		}
 		target.style[property] = value;
 	}
 }
