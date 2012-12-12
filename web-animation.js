@@ -48,7 +48,7 @@ var Timing = function(timingDict) {
   if (this.duration < 0.0) {
     throw new IndexSizeError('duration must be >= 0');
   }
-  this.iterationCount = exists(timingDict.iterationCount) ?
+  this.iterationCount = isDefined(timingDict.iterationCount) ?
       timingDict.iterationCount : 1.0;
   if (this.iterationCount < 0.0) {
     throw new IndexSizeError('iterationCount must be >= 0');
@@ -57,7 +57,7 @@ var Timing = function(timingDict) {
   if (this.iterationStart < 0.0) {
     throw new IndexSizeError('iterationStart must be >= 0');
   }
-  this.playbackRate = exists(timingDict.playbackRate) ?
+  this.playbackRate = isDefined(timingDict.playbackRate) ?
       timingDict.playbackRate : 1.0;
   //this.playbackRate = timingDict.playbackRate || 1.0;
   this.direction = timingDict.direction || 'normal';
@@ -179,8 +179,12 @@ mixin(TimedTemplate.prototype, {
   }
 });
 
-var exists = function(val) {
-  return typeof val !== 'undefined' && (val !== null);
+var isDefined = function(val) {
+  return typeof val !== 'undefined';
+};
+
+var isDefinedAndNotNull = function(val) {
+  return isDefined(val) && (val !== null);
 };
 
 var ST_MANUAL = 0;
@@ -193,13 +197,12 @@ var TimedItem = function(timing, startTime, parentGroup) {
     this.updateIterationDuration();
   }.bind(this));
   this._startTime = startTime;
-  this.updateIterationDuration();
   this.currentIteration = null;
   this.iterationTime = null;
   this.animationTime = null;
   this._reversing = false;
 
-  if (!exists(parentGroup)) {
+  if (!isDefined(parentGroup)) {
     this.parentGroup = DEFAULT_GROUP;
   } else if (parentGroup === null || parentGroup instanceof TimedItem) {
     this.parentGroup = parentGroup;
@@ -207,7 +210,7 @@ var TimedItem = function(timing, startTime, parentGroup) {
     throw new TypeError('parentGroup is not a TimedItem');
   }
 
-  if (!exists(startTime)) {
+  if (!isDefined(startTime)) {
     this._startTimeMode = ST_AUTO;
     if (this.parentGroup) {
       this._startTime = this.parentGroup.iterationTime || 0;
@@ -218,13 +221,14 @@ var TimedItem = function(timing, startTime, parentGroup) {
     this._startTimeMode = ST_MANUAL;
     this._startTime = startTime;
   }
-  this.endTime = this._startTime + this.animationDuration +
-      this.timing.startDelay;
+
+  this._timeDrift = 0;
+  this._locallyPaused = false;
+  this.updateIterationDuration();
+
   if (this.parentGroup) {
     this.parentGroup._addChild(this);
   }
-  this._timeDrift = 0;
-  this._locallyPaused = false;
   this._pauseStartTime = 0;
 };
 
@@ -286,7 +290,7 @@ TimedItem.prototype.__defineSetter__('locallyPaused', function(newVal) {
 });
 TimedItem.prototype.__defineGetter__('paused', function() {
   return this.locallyPaused ||
-      (exists(this.parentGroup) && this.parentGroup.paused);
+      (isDefinedAndNotNull(this.parentGroup) && this.parentGroup.paused);
 });
 
 mixin(TimedItem.prototype, {
@@ -308,7 +312,7 @@ mixin(TimedItem.prototype, {
   },
   // TODO: take timing.iterationStart into account. Spec needs to as well.
   updateIterationDuration: function() {
-    if (exists(this.timing.duration)) {
+    if (isDefined(this.timing.duration)) {
       this.duration = this.timing.duration;
     } else {
       this.duration = this.intrinsicDuration();
@@ -329,10 +333,10 @@ mixin(TimedItem.prototype, {
       this.endTime = this._startTime + this.animationDuration +
           this.timing.startDelay + this.timeDrift;
     }
-    if (this.parentGroup && this.parentGroup.iterationTime) {
+    if (this.parentGroup && this.parentGroup.iterationTime !== null) {
       this.itemTime = this.parentGroup.iterationTime -
           this._startTime - this.timeDrift;
-    } else if (exists(parentTime)) {
+    } else if (isDefined(parentTime)) {
       this.itemTime = parentTime;
     } else {
       this.itemTime = null;
@@ -534,7 +538,7 @@ var interpretAnimFunc = function(animFunc) {
 };
 
 var interpretTimingParam = function(timing) {
-  if (!exists(timing) || timing === null) {
+  if (!isDefinedAndNotNull(timing)) {
     return new Timing({});
   }
   if (timing instanceof Timing || timing instanceof TimingProxy) {
@@ -822,7 +826,7 @@ var AnimListMixin = {
     return removedItems;
   },
   remove: function(index, count) {
-    if (!exists(count)) {
+    if (!isDefined(count)) {
       count = 1;
     }
     return this.splice(index, count);
@@ -940,7 +944,7 @@ mixin(AnimGroup.prototype, {
       var dur = Math.max.apply(undefined, this.children.map(function(a) {
         return a.endTime;
       }));
-      return dur;
+      return Math.max(0, dur);
     } else if (this.type == 'seq') {
       var result = 0;
       this.children.forEach(function(a) {
@@ -1107,7 +1111,7 @@ AnimFunc._createKeyframeFunc = function(property, value, operation) {
   }
   // TODO: Need to handle KeyframeDict objects once they're defined
 
-  if (exists(operation)) {
+  if (isDefinedAndNotNull(operation)) {
     func.operation = operation;
   }
 
@@ -1312,8 +1316,8 @@ var interp = function(from, to, f, type) {
     return interpArray(from, to, f, type);
   }
   var zero = type == 'scale' ? 1.0 : 0.0;
-  to   = exists(to) ? to : zero;
-  from = exists(from) ? from : zero;
+  to   = isDefinedAndNotNull(to) ? to : zero;
+  from = isDefinedAndNotNull(from) ? from : zero;
 
   return to * f + from * (1 - f);
 };
@@ -1655,27 +1659,27 @@ mixin(Compositor.prototype, {
 
 var initializeIfSVGAndUninitialized = function(property, target) {
   if (propertyIsSVGAttrib(property, target)) {
-    if (!exists(target._actuals)) {
+    if (!isDefinedAndNotNull(target._actuals)) {
       target._actuals = {};
       target._bases = {};
       target.actuals = {};
       target._getAttribute = target.getAttribute;
       target._setAttribute = target.setAttribute;
       target.getAttribute = function(name) {
-        if (exists(target._bases[name])) {
+        if (isDefinedAndNotNull(target._bases[name])) {
           return target._bases[name];
         }
         return target._getAttribute(name);
       };
       target.setAttribute = function(name, value) {
-        if (exists(target._actuals[name])) {
+        if (isDefinedAndNotNull(target._actuals[name])) {
           target._bases[name] = value;
         } else {
           target._setAttribute(name, value);
         }
       };
     }
-    if(!exists(target._actuals[property])) {
+    if(!isDefinedAndNotNull(target._actuals[property])) {
       var baseVal = target.getAttribute(property);
       target._actuals[property] = 0;
       target._bases[property] = baseVal;
@@ -1762,8 +1766,8 @@ DEFAULT_GROUP._tick = function(parentTime) {
   return !allFinished;
 }
 DEFAULT_GROUP.currentState = function() {
-  return this.iterationTime + ' ' + (exists(rAFNo) ? 'ticking' : 'stopped') +
-      ' ' + this.toString();
+  return this.iterationTime + ' ' +
+      (isDefinedAndNotNull(rAFNo) ? 'ticking ' : 'stopped ') + this.toString();
 }.bind(DEFAULT_GROUP);
 
 // If requestAnimationFrame is unprefixed then it uses high-res time.
@@ -1777,7 +1781,7 @@ var timeZero = useHighResTime ? 0 : Date.now();
 // Massive hack to allow things to be added to the parent group and start
 // playing. Maybe this is right though?
 DEFAULT_GROUP.__defineGetter__('iterationTime', function() {
-  if (!exists(timeNow)) {
+  if (!isDefinedAndNotNull(timeNow)) {
     timeNow = useHighResTime ?
         window.performance.now() : Date.now() - timeZero;
     window.setTimeout(function() { timeNow = undefined; }, 0);
@@ -1796,7 +1800,7 @@ var ticker = function(frameTime) {
 };
 
 var maybeRestartAnimation = function() {
-  if (exists(rAFNo)) {
+  if (isDefinedAndNotNull(rAFNo)) {
     return;
   }
   rAFNo = requestAnimationFrame(ticker);
