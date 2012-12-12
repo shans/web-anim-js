@@ -19,7 +19,8 @@ limitations under the License.
 .animContainer {
 	position: absolute;
 	left: 0px;
-	height: 100px;
+	height: 150px;
+	border-right: 1px solid black;
 }
 
 .anim {
@@ -31,22 +32,27 @@ limitations under the License.
 }
 
 #ca {
-	top: 0px;
+	top: 50px;
+	width: 280px;
 }
 
 #cb {
-	top: 200px;
+	top: 250px;
+	width: 100px;
 }
 
 #cc {
-	top: 400px;
+	top: 450px;
+	width: 100px;
 }
-
 
 #cd {
-	top: 600px;
+	top: 650px;
+	width: 280px;
 }
 </style>
+
+<div>All elements should line up at the end of each iteration (or start if reversed).</div>
 
 <div class="animContainer" id="ca">
 	<div class="anim a"></div>
@@ -100,19 +106,22 @@ for (var i = 0; i < directions.length; i++) {
 
 for (var i = 0; i < containers.length; i++) {
 	var container = document.getElementById(containers[i]);
-	<!-- All squares should line up at the end of each iteration (or start if reversed). -->
-	<!-- Test basic use. -->
+	// Test basic use.
 	new Anim(container.getElementsByClassName("a")[0], {left: ["100px", "300px"]}, {duration: 1, iterationCount: 3.1, iterationStart: 0.3}, groups[i]);
-	<!-- Test that iterationStart has a lower bound of zero. -->
-	new Anim(container.getElementsByClassName("b")[0], {left: ["100px", "300px"]}, {duration: 1, iterationCount: 3.4, iterationStart: -0.2}, groups[i]);
-	<!-- Test that iterationStart has an upper bound of iterationCount. -->
-	<!-- TODO: Revisit this decision. -->
+	// Test that negative values of iterationStart cause an IndexSizeError exception.
+	try {
+		new Anim(container.getElementsByClassName("b")[0], {left: ["100px", "300px"]}, {duration: 1, iterationCount: 3.4, iterationStart: -0.2}, groups[i]);
+	} catch(e) {
+		new Anim(container.getElementsByClassName("b")[0], {left: ["100px", "300px"]}, {duration: 1, iterationCount: 3.4}, groups[i]);
+	}
+	// Test that iterationStart has an upper bound of iterationCount.
+	// TODO: Revisit this decision.
 	new Anim(container.getElementsByClassName("c")[0], {left: ["100px", "300px"]}, {duration: 1, iterationCount: 1.7, iterationStart: 1.8}, groups[i]);
-	<!-- Test that nothing odd happens when iterationCount is an integer. -->
+	// Test that nothing odd happens when iterationCount is an integer.
 	new Anim(container.getElementsByClassName("d")[0], {left: ["100px", "300px"]}, {duration: 1, iterationCount: 3.0, iterationStart: 0.4}, groups[i]);
-	<!-- Test that nothing odd happens when (iterationCount - iterationStart) is an integer. -->
+	// Test that nothing odd happens when (iterationCount - iterationStart) is an integer.
 	new Anim(container.getElementsByClassName("e")[0], {left: ["100px", "300px"]}, {duration: 1, iterationCount: 3.2, iterationStart: 0.2}, groups[i]);
-	<!-- Test that nothing odd happens when (iterationCount + iterationStart) is an integer. -->
+	// Test that nothing odd happens when (iterationCount + iterationStart) is an integer.
 	new Anim(container.getElementsByClassName("f")[0], {left: ["100px", "180px"]}, {duration: 1, iterationCount: 2.8, iterationStart: 0.2}, groups[i]);
 }
 </script>
